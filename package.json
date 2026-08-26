@@ -1,0 +1,36 @@
+{
+  "name": "visual-experience-project",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Website built with Contentstack Visual Experience (Live Preview SDK + Visual Builder), bootstrapped entirely from a script.",
+  "scripts": {
+    "bootstrap": "node --env-file=.env scripts/bootstrap.mjs",
+    "bootstrap:skip-publish": "node --env-file=.env scripts/bootstrap.mjs --skip-publish",
+    "dev": "vite --port 3000 --strictPort",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --port 3000 --strictPort",
+    "typecheck": "tsc --noEmit",
+    "preview:demo": "node --env-file=.env scripts/preview-api-demo.mjs",
+    "site:url": "node --env-file=.env scripts/set-site-url.mjs",
+    "vercel:env": "node scripts/vercel-env.mjs",
+    "deploy": "vercel deploy --prod",
+    "gh:env": "node scripts/gh-env.mjs",
+    "seed:timeline": "node --env-file=.env scripts/seed-timeline.mjs"
+  },
+  "dependencies": {
+    "@contentstack/live-preview-utils": "^4.5.0",
+    "@contentstack/utils": "^1.9.1",
+    "contentstack": "^3.27.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.2"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.0"
+  }
+}

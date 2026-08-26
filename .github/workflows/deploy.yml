@@ -1,0 +1,123 @@
+# Build and deploy one site per Contentstack stack, in parallel.
+#
+# Each entry in the `DEPLOY_ENVIRONMENTS` repo variable names a GitHub
+# Environment. Matrix jobs run concurrently, so every stack gets its own live
+# deployment at the same time — one Vercel project per stack, so they never
+# overwrite each other.
+#
+# GitHub Environments are the source of truth for configuration. Nothing
+# Contentstack-specific is committed.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "Deploy a single environment (blank = all)"
+        required: false
+        type: string
+
+concurrency:
+  # Serialise per environment, but let different environments run together.
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Turn the DEPLOY_ENVIRONMENTS variable into a matrix. GitHub cannot enumerate
+  # its own Environments, so the list lives in one repo variable.
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      environments: ${{ steps.pick.outputs.environments }}
+    steps:
+      - id: pick
+        run: |
+          ALL='${{ vars.DEPLOY_ENVIRONMENTS }}'
+          if [ -z "$ALL" ]; then
+            echo "DEPLOY_ENVIRONMENTS repo variable is not set." >&2
+            echo 'Set it to a JSON array, e.g. ["dev15","dev22"]' >&2
+            exit 1
+          fi
+          ONLY='${{ inputs.only }}'
+          if [ -n "$ONLY" ]; then
+            echo "environments=[\"$ONLY\"]" >> "$GITHUB_OUTPUT"
+          else
+            echo "environments=$(echo "$ALL" | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
+          fi
+
+  deploy:
+    needs: plan
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJSON(needs.plan.outputs.environments) }}
+    environment:
+      name: ${{ matrix.environment }}
+      url: ${{ steps.deploy.outputs.url }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Install Vercel CLI
+        run: npm i -g vercel@latest
+
+      # Project settings + framework config for THIS environment's project.
+      - name: Pull Vercel project settings
+        env:
+          VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+        run: vercel pull --yes --environment=production --token="${{ secrets.VERCEL_TOKEN }}"
+
+      # Vite reads VITE_* from process env at build time, so no .env file is
+      # needed. These are compiled into the client bundle and are public by
+      # construction — see docs/MULTI_STACK.md.
+      - name: Build
+        env:
+          VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+          VITE_CONTENTSTACK_API_KEY: ${{ vars.CS_STACK_API_KEY }}
+          VITE_CONTENTSTACK_ENVIRONMENT: ${{ vars.CS_ENVIRONMENT }}
+          VITE_CONTENTSTACK_BRANCH: ${{ vars.CS_BRANCH }}
+          VITE_CONTENTSTACK_LOCALE: ${{ vars.CS_LOCALE }}
+          VITE_CONTENTSTACK_API_HOST: ${{ vars.CS_CDN_HOST }}
+          VITE_CONTENTSTACK_APP_HOST: ${{ vars.CS_APP_URL }}
+          VITE_CONTENTSTACK_PREVIEW_HOST: ${{ vars.CS_PREVIEW_HOST }}
+          VITE_CONTENTSTACK_GRAPHQL_PREVIEW_HOST: ${{ vars.CS_GRAPHQL_PREVIEW_HOST }}
+          VITE_CONTENTSTACK_DELIVERY_TOKEN: ${{ secrets.CS_DELIVERY_TOKEN }}
+          VITE_CONTENTSTACK_PREVIEW_TOKEN: ${{ secrets.CS_PREVIEW_TOKEN }}
+        run: vercel build --prod --token="${{ secrets.VERCEL_TOKEN }}"
+
+      - name: Deploy
+        id: deploy
+        env:
+          VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+        run: |
+          URL=$(vercel deploy --prebuilt --prod --token="${{ secrets.VERCEL_TOKEN }}")
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "Deployed ${{ matrix.environment }} -> $URL"
+
+      # Point this stack's Contentstack environment at its own deployment, so
+      # Visual Builder frames the right site per stack.
+      - name: Point Contentstack at the deployment
+        if: vars.CS_SYNC_SITE_URL == 'true'
+        env:
+          CS_INSTANCE: ${{ vars.CS_INSTANCE }}
+          CS_STACK_API_KEY: ${{ vars.CS_STACK_API_KEY }}
+          CS_ENVIRONMENT: ${{ vars.CS_ENVIRONMENT }}
+          CS_BRANCH: ${{ vars.CS_BRANCH }}
+          CS_LOCALE: ${{ vars.CS_LOCALE }}
+          CS_USER_EMAIL: ${{ vars.CS_USER_EMAIL }}
+          CS_USER_PASSWORD: ${{ secrets.CS_USER_PASSWORD }}
+          CS_USER_TOTP_SECRET: ${{ secrets.CS_USER_TOTP_SECRET }}
+        run: node scripts/set-site-url.mjs "${{ vars.CS_PUBLIC_URL || steps.deploy.outputs.url }}"

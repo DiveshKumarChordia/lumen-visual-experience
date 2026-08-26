@@ -1,0 +1,61 @@
+# Create/sync content types, taxonomies, global fields, assets and entries in a
+# chosen stack.
+#
+# Manual only. This WRITES to Contentstack, so it must never run on push.
+name: Bootstrap stack
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "GitHub Environment (= the target stack)"
+        required: true
+        type: string
+      skip_publish:
+        description: "Create/update entries but leave them unpublished"
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Bootstrap ${{ inputs.environment }}
+        env:
+          CS_INSTANCE: ${{ vars.CS_INSTANCE }}
+          CS_STACK_API_KEY: ${{ vars.CS_STACK_API_KEY }}
+          CS_STACK_NAME: ${{ vars.CS_STACK_NAME }}
+          CS_ENVIRONMENT: ${{ vars.CS_ENVIRONMENT }}
+          CS_BRANCH: ${{ vars.CS_BRANCH }}
+          CS_LOCALE: ${{ vars.CS_LOCALE }}
+          CS_SITE_URL: ${{ vars.CS_PUBLIC_URL }}
+          CS_USER_EMAIL: ${{ vars.CS_USER_EMAIL }}
+          CS_USER_PASSWORD: ${{ secrets.CS_USER_PASSWORD }}
+          # Required in CI: an interactive 6-digit code is impossible here, so the
+          # base32 secret is the only workable second factor.
+          CS_USER_TOTP_SECRET: ${{ secrets.CS_USER_TOTP_SECRET }}
+        run: |
+          if [ "${{ inputs.skip_publish }}" = "true" ]; then
+            node scripts/bootstrap.mjs --skip-publish
+          else
+            node scripts/bootstrap.mjs
+          fi
+
+      # .env.local now holds the tokens this stack's build needs. Surface them so
+      # they can be copied into the Environment's secrets.
+      - name: Show derived token names
+        run: |
+          echo "Derived values (copy into this Environment's secrets/variables):"
+          grep -oE '^VITE_[A-Z_]+' .env.local | sed 's/^/  /'
