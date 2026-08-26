@@ -78,11 +78,19 @@ unaffected.
 | File | Purpose |
 |---|---|
 | `.env.local` | what Vite reads — the *active* stack for `npm run dev` |
-| `.env.<name>.local` | durable record for that stack |
+| `<env file>.derived` | durable per-stack record, e.g. `.env.derived` |
 
-The sidecar matters: without it, bootstrapping a second stack overwrites the
-first stack's tokens and `gh:env` would then publish the wrong values. `gh:env`
-reads the sidecar matching the `--env` file you pass.
+The sidecar is named `.derived`, not `.local`, on purpose. `<file>.local` collides
+for the default file — `.env` and `.env.local` are the pair Vite already uses — so
+a second stack's run overwrote the first stack's record and later reads silently
+got the wrong stack's tokens. `gh:env` reads the `.derived` file matching the
+`--env` file you pass.
+
+`CS_SITE_URL` in each env file should hold that stack's **deployed** URL, because
+every bootstrap run applies it to the Contentstack environment. Leaving it at
+localhost means a routine re-run silently repoints Visual Builder away from the
+deployed site. Switch temporarily with `npm run site:url` when developing
+locally.
 
 ## Organizations
 

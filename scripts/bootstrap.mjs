@@ -654,16 +654,16 @@ VITE_SITE_URL=${cfg.siteUrl}
   fs.writeFileSync(path.join(ROOT, '.env.local'), body, 'utf8');
   log.ok('.env.local written (active stack for npm run dev)');
 
-  // Also keep a per-stack sidecar. Without it, bootstrapping a second stack
-  // silently destroys the first stack's derived tokens, and `gh:env` would then
-  // publish the wrong values.
+  // Per-stack record, ALWAYS written and never named `.env.local`.
+  //
+  // Naming the sidecar `<file>.local` collided for the default file: `.env` and
+  // `.env.local` are the same pair Vite uses, so stack 2's run overwrote stack
+  // 1's record and any later read silently got the wrong stack's tokens.
+  // `<file>.derived` is always distinct.
   if (envFile) {
-    const base = path.basename(envFile);
-    if (base !== '.env') {
-      const sidecar = path.join(ROOT, `${base}.local`);
-      fs.writeFileSync(sidecar, body, 'utf8');
-      log.ok(`${base}.local written (per-stack record)`);
-    }
+    const sidecar = path.join(ROOT, `${path.basename(envFile)}.derived`);
+    fs.writeFileSync(sidecar, body, 'utf8');
+    log.ok(`${path.basename(sidecar)} written (per-stack record)`);
   }
 }
 

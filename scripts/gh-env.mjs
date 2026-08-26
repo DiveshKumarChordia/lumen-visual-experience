@@ -56,7 +56,7 @@ function readEnvFile(name) {
  */
 const envArgIdx = argv.findIndex((a) => a === '--env' || a === '--env-file');
 const chosenEnv = envArgIdx !== -1 ? path.basename(argv[envArgIdx + 1]) : '.env';
-const derivedName = chosenEnv === '.env' ? '.env.local' : `${chosenEnv}.local`;
+const derivedName = `${chosenEnv}.derived`;
 
 const dotenv = readEnvFile(chosenEnv);
 const local = readEnvFile(derivedName);
