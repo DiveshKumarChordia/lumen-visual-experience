@@ -33,7 +33,7 @@
  */
 import ContentstackLivePreview from "@contentstack/live-preview-utils";
 import type { LivePreviewQuery } from "contentstack";
-import { Stack } from "./entry";
+import { canPreview, Stack } from "./entry";
 
 /** Documented accessor; empty string when not inside a preview pane. */
 export function livePreviewHash(): string {
@@ -70,6 +70,10 @@ export interface PreviewContext {
  * empty header rather than clearing it.
  */
 export function applyPreviewContext(ctx: PreviewContext = {}): void {
+  // Applying a hash with no preview token routes the read to rest-preview and
+  // 401s. Stay on the CDA instead.
+  if (!canPreview) return;
+
   // `livePreviewQuery` assigns `live_preview = query.live_preview || 'init'`
   // unconditionally, so passing an empty hash WIPES one that was already set.
   // Fall back to whatever the Stack currently holds.
@@ -97,6 +101,7 @@ export function applyPreviewContext(ctx: PreviewContext = {}): void {
  * which the API rejects with error_code 382.
  */
 export function syncPreviewFromUrl(): void {
+  if (!canPreview) return;
   const stack = Stack as unknown as {
     setLivePreviewTimelinePreviewForClient?: () => void;
   };

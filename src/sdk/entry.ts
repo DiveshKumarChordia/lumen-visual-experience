@@ -31,17 +31,36 @@ export const currentBranch =
   config.BRANCH ||
   "main";
 
+/**
+ * Preview reads need a preview token. Without one — it is plan-gated, so some
+ * stacks simply cannot have it — arming live preview makes the SDK swap to the
+ * rest-preview host and send an EMPTY `preview_token`, which returns
+ * `401 You're not allowed in here unless you're logged in.`
+ *
+ * Enabling conditionally keeps such a stack on the CDA, so the site renders
+ * published content instead of failing.
+ */
+export const canPreview = Boolean(config.PREVIEW_TOKEN);
+
 export const Stack = contentstack.Stack({
   api_key: config.API_KEY,
   delivery_token: config.DELIVERY_TOKEN,
   environment: config.ENVIRONMENT,
   branch: currentBranch,
   live_preview: {
-    enable: true,
+    enable: canPreview,
     preview_token: config.PREVIEW_TOKEN,
     host: previewHost,
   },
 });
+
+if (!canPreview) {
+  console.warn(
+    "[contentstack] No preview token configured, so drafts cannot be read. " +
+      "Rendering published content from the CDA instead. Preview tokens are " +
+      "plan-gated (CMA error_code 600).",
+  );
+}
 
 const appUrl = new URL(config.APP_HOST);
 

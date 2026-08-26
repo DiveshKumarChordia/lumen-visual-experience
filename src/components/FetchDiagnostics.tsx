@@ -7,6 +7,7 @@
  */
 import config from "../config";
 import { lastPreviewFallback } from "../helper";
+import { canPreview } from "../sdk/entry";
 import { describeActiveRead, livePreviewHash } from "../sdk/previewContext";
 
 export default function FetchDiagnostics({
@@ -42,6 +43,15 @@ export default function FetchDiagnostics({
 
       {lastPreviewFallback && (
         <p className="state__note">{lastPreviewFallback}</p>
+      )}
+
+      {!canPreview && (
+        <p className="state__note">
+          This stack has no preview token, so draft preview is off and the site
+          reads published content from the CDA. Preview tokens are plan-gated
+          (CMA <code>error_code 600</code>) — ask for it to be enabled on this
+          stack, then re-run <code>npm run bootstrap</code>.
+        </p>
       )}
 
       <dl className="state__kv">
