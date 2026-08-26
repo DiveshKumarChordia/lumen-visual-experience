@@ -24,10 +24,14 @@
  *   POST /v3/content_types/:ct/entries/:uid/publish
  *        { entry: { environments, locales }, version, scheduled_at, locale }
  */
+import { loadEnvFile } from './lib/env-file.mjs';
 import { Cma, CmaError } from './lib/cma.mjs';
 import { normalizeForWrite } from './lib/entry-io.mjs';
 import { resolveHosts } from './lib/hosts.mjs';
 import { log } from './lib/logger.mjs';
+
+// Must run before any config is read.
+const { file: envFile } = loadEnvFile();
 
 const LIST_ONLY = process.argv.includes('--clear');
 

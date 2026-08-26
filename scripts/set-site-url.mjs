@@ -11,15 +11,21 @@
  *   1. the environment's `urls` entry for the locale
  *   2. stack.settings.live_preview['default-url']
  */
+import { loadEnvFile, stripEnvFlag } from './lib/env-file.mjs';
 import { Cma, CmaError } from './lib/cma.mjs';
 import { resolveHosts } from './lib/hosts.mjs';
 import { log } from './lib/logger.mjs';
 
-const target = process.argv[2];
+// Must run before any config is read.
+const { file: envFile } = loadEnvFile();
+
+// Strip `--env <file>` first, or the flag is mistaken for the target URL.
+const target = stripEnvFlag(process.argv.slice(2))[0];
 
 if (!target || !/^https?:\/\//.test(target)) {
-  log.err('Usage: npm run site:url -- <origin>');
+  log.err('Usage: npm run site:url -- [--env <file>] <origin>');
   log.info('e.g.  npm run site:url -- https://your-app.vercel.app');
+  log.info('      npm run site:url -- --env .env.secondproject https://other.vercel.app');
   process.exit(1);
 }
 

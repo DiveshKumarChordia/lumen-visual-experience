@@ -18,8 +18,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { loadEnvFile } from './lib/env-file.mjs';
 import { resolveHosts } from './lib/hosts.mjs';
 import { log } from './lib/logger.mjs';
+
+// Must run before any config is read.
+const { file: envFile } = loadEnvFile();
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const argv = process.argv.slice(2);
@@ -46,8 +50,20 @@ function readEnvFile(name) {
   );
 }
 
-const dotenv = readEnvFile('.env');
-const local = readEnvFile('.env.local');
+/**
+ * Read the env file that was selected, plus ITS derived sidecar — not always
+ * `.env.local`, which only ever holds the most recently bootstrapped stack.
+ */
+const envArgIdx = argv.findIndex((a) => a === '--env' || a === '--env-file');
+const chosenEnv = envArgIdx !== -1 ? path.basename(argv[envArgIdx + 1]) : '.env';
+const derivedName = chosenEnv === '.env' ? '.env.local' : `${chosenEnv}.local`;
+
+const dotenv = readEnvFile(chosenEnv);
+const local = readEnvFile(derivedName);
+
+if (!Object.keys(local).length) {
+  log.warn(`${derivedName} not found — run: npm run bootstrap -- --env ${chosenEnv}`);
+}
 const hosts = resolveHosts(dotenv);
 
 /**
@@ -75,7 +91,10 @@ const repoArgs = repo ? ['--repo', repo] : [];
 const variables = {
   CS_INSTANCE: dotenv.CS_INSTANCE ?? '',
   CS_STACK_API_KEY: local.VITE_CONTENTSTACK_API_KEY ?? dotenv.CS_STACK_API_KEY ?? '',
-  CS_STACK_NAME: dotenv.CS_STACK_NAME ?? '',
+  CS_STACK_NAME: (dotenv.CS_STACK_NAME ?? '').trim(),
+  // Published so CI runs the same org/stack cross-check as a local run.
+  CS_ORG_UID: dotenv.CS_ORG_UID ?? '',
+  CS_ORG_NAME: dotenv.CS_ORG_NAME ?? '',
   CS_ENVIRONMENT: local.VITE_CONTENTSTACK_ENVIRONMENT ?? dotenv.CS_ENVIRONMENT ?? '',
   CS_BRANCH: local.VITE_CONTENTSTACK_BRANCH ?? dotenv.CS_BRANCH ?? 'main',
   CS_LOCALE: local.VITE_CONTENTSTACK_LOCALE ?? dotenv.CS_LOCALE ?? 'en-us',
@@ -100,6 +119,7 @@ const secrets = {
 
 async function main() {
   log.banner(`GitHub Environment: ${envName}${DRY ? ' (dry run)' : ''}`);
+  log.value('config from', `${chosenEnv} + ${derivedName}`);
 
   log.step('Create environment');
   const owner = repo ?? gh(['repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner']).trim();

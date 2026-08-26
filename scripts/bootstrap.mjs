@@ -24,6 +24,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { loadEnvFile } from './lib/env-file.mjs';
 import { Cma, CmaError } from './lib/cma.mjs';
 import { resolveHosts } from './lib/hosts.mjs';
 import { log } from './lib/logger.mjs';
@@ -35,6 +36,9 @@ import {
 } from './lib/model.mjs';
 import { AUTHORS, BLOG_POSTS, FOOTER, HEADER, PAGES } from './lib/seed.mjs';
 import { ASSETS, resolveAssetRefs } from './lib/assets.mjs';
+
+// Must run before any config is read.
+const { file: envFile } = loadEnvFile();
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -86,39 +90,95 @@ function config() {
 
 // -------------------------------------------------------------------- steps
 
+/**
+ * Resolve the organization, and — when a stack api key is also given — verify the
+ * stack actually belongs to it.
+ *
+ * Previously this returned early whenever CS_STACK_API_KEY was set, which meant
+ * an org named in config was silently ignored: the run just used whichever org
+ * owned that key. With several orgs on one account (and a stack name reused
+ * between them) that is how you bootstrap the wrong stack. If both are supplied
+ * they must agree.
+ */
 async function resolveOrg(cma, cfg) {
   log.step('Resolve organization');
-  // With an explicit stack api key the org is irrelevant — every later call is
-  // stack-scoped, so don't guess (and don't warn about) an org.
-  if (cfg.stackApiKey) {
-    log.skip('CS_STACK_API_KEY set, org not needed');
-    return '';
-  }
-  if (cfg.orgUid) {
-    log.value('organization_uid', cfg.orgUid);
-    return cfg.orgUid;
-  }
+
   const orgs = await cma.organizations();
   if (!orgs.length) throw new Error('This account belongs to no organizations.');
 
-  let org;
-  if (cfg.orgName) {
-    org = orgs.find((o) => o.name === cfg.orgName);
+  let org = null;
+
+  if (cfg.orgUid) {
+    org = orgs.find((o) => o.uid === cfg.orgUid) ?? null;
     if (!org) {
       throw new Error(
-        `No organization named "${cfg.orgName}". Available: ${orgs.map((o) => o.name).join(', ')}`,
+        `No organization with uid "${cfg.orgUid}" on this account. ` +
+          `Available: ${orgs.map((o) => `${o.name} (${o.uid})`).join(', ')}`,
       );
     }
-  } else {
-    org = orgs[0];
-    if (orgs.length > 1) {
-      log.warn(`${orgs.length} organizations found, using the first. Set CS_ORG_NAME to choose.`);
-      orgs.forEach((o) => log.info(`  - ${o.name} (${o.uid})`));
+  } else if (cfg.orgName) {
+    // Names can carry stray whitespace when copied from the UI.
+    const want = cfg.orgName.trim().toLowerCase();
+    org = orgs.find((o) => (o.name ?? '').trim().toLowerCase() === want) ?? null;
+    if (!org) {
+      throw new Error(
+        `No organization named "${cfg.orgName}". ` +
+          `Available: ${orgs.map((o) => o.name).join(', ')}`,
+      );
     }
   }
-  log.ok(`${org.name}`);
-  log.value('organization_uid', org.uid);
-  return org.uid;
+
+  if (org) {
+    // Both given: cross-check so a copy/paste mismatch fails loudly.
+    if (cfg.orgUid && cfg.orgName) {
+      const nameMatches =
+        (org.name ?? '').trim().toLowerCase() === cfg.orgName.trim().toLowerCase();
+      if (!nameMatches) {
+        throw new Error(
+          `CS_ORG_UID (${cfg.orgUid} -> "${org.name}") and CS_ORG_NAME ` +
+            `("${cfg.orgName}") disagree. Fix one of them.`,
+        );
+      }
+    }
+    log.ok(`${org.name}`);
+    log.value('organization_uid', org.uid);
+    return org.uid;
+  }
+
+  // Neither supplied.
+  if (cfg.stackApiKey) {
+    log.skip('no org configured; using the stack api key alone');
+    return '';
+  }
+  const first = orgs[0];
+  if (orgs.length > 1) {
+    log.warn(`${orgs.length} organizations found, using the first. Set CS_ORG_NAME or CS_ORG_UID.`);
+    orgs.forEach((o) => log.info(`  - ${o.name} (${o.uid})`));
+  }
+  log.ok(`${first.name}`);
+  log.value('organization_uid', first.uid);
+  return first.uid;
+}
+
+/**
+ * Confirm the stack api key belongs to the resolved org before anything is
+ * written. Cheap, and it turns "wrong org" from silent data corruption into a
+ * clear failure.
+ */
+async function verifyStackInOrg(cma, cfg, orgUid) {
+  if (!orgUid || !cfg.stackApiKey) return;
+
+  log.step('Verify stack belongs to the organization');
+  const stacks = await cma.stacks({ orgUid });
+  const match = stacks.find((st) => st.api_key === cfg.stackApiKey);
+
+  if (!match) {
+    throw new Error(
+      `Stack ${cfg.stackApiKey} is not in organization ${orgUid}. ` +
+        `Stacks there: ${stacks.map((st) => `${st.name} (${st.api_key})`).join(', ') || '(none visible)'}`,
+    );
+  }
+  log.ok(`"${(match.name ?? '').trim()}" is in this org`);
 }
 
 async function resolveStack(cma, cfg, orgUid) {
@@ -589,9 +649,22 @@ VITE_CONTENTSTACK_GRAPHQL_PREVIEW_HOST=${hosts.graphqlPreviewHost}
 
 VITE_SITE_URL=${cfg.siteUrl}
 `;
-  const target = path.join(ROOT, '.env.local');
-  fs.writeFileSync(target, body, 'utf8');
-  log.ok('.env.local written');
+  // `.env.local` is what Vite reads, so it always reflects the most recently
+  // bootstrapped stack — that is the "active" one for `npm run dev`.
+  fs.writeFileSync(path.join(ROOT, '.env.local'), body, 'utf8');
+  log.ok('.env.local written (active stack for npm run dev)');
+
+  // Also keep a per-stack sidecar. Without it, bootstrapping a second stack
+  // silently destroys the first stack's derived tokens, and `gh:env` would then
+  // publish the wrong values.
+  if (envFile) {
+    const base = path.basename(envFile);
+    if (base !== '.env') {
+      const sidecar = path.join(ROOT, `${base}.local`);
+      fs.writeFileSync(sidecar, body, 'utf8');
+      log.ok(`${base}.local written (per-stack record)`);
+    }
+  }
 }
 
 // --------------------------------------------------------------------- main
@@ -607,6 +680,10 @@ async function main() {
   log.value('preview (gql)', cfg.hosts.graphqlPreviewUrl);
   log.value('app', cfg.hosts.appUrl);
   log.value('site', cfg.siteUrl);
+  if (cfg.orgName || cfg.orgUid) {
+    log.value('org', `${cfg.orgName || '(by uid)'} ${cfg.orgUid ? `(${cfg.orgUid})` : ''}`.trim());
+  }
+  if (envFile) log.value('env file', envFile.replace(`${ROOT}/`, ''));
 
   const cma = new Cma({ cmaBase: cfg.hosts.cmaBase, branch: cfg.branch });
 
@@ -621,6 +698,7 @@ async function main() {
 
   try {
     const orgUid = await resolveOrg(cma, cfg);
+    await verifyStackInOrg(cma, cfg, orgUid);
     const stack = await resolveStack(cma, cfg, orgUid);
     cfg.stackApiKeyResolved = stack.api_key;
     await resolveEnvironment(cma, cfg);

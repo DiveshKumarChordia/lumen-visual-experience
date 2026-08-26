@@ -37,6 +37,8 @@ jobs:
           CS_INSTANCE: ${{ vars.CS_INSTANCE }}
           CS_STACK_API_KEY: ${{ vars.CS_STACK_API_KEY }}
           CS_STACK_NAME: ${{ vars.CS_STACK_NAME }}
+          CS_ORG_UID: ${{ vars.CS_ORG_UID }}
+          CS_ORG_NAME: ${{ vars.CS_ORG_NAME }}
           CS_ENVIRONMENT: ${{ vars.CS_ENVIRONMENT }}
           CS_BRANCH: ${{ vars.CS_BRANCH }}
           CS_LOCALE: ${{ vars.CS_LOCALE }}

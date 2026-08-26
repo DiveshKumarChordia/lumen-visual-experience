@@ -21,9 +21,13 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
+import { loadEnvFile } from './lib/env-file.mjs';
 import { Cma } from './lib/cma.mjs';
 import { resolveHosts } from './lib/hosts.mjs';
 import { log } from './lib/logger.mjs';
+
+// Must run before any config is read.
+const { file: envFile } = loadEnvFile();
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
