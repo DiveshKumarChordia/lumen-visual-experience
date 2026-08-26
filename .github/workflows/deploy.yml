@@ -112,12 +112,37 @@ jobs:
       - name: Install Vercel CLI
         run: npm i -g vercel@latest
 
-      # Project settings + framework config for THIS environment's project.
+      # Link explicitly rather than relying on VERCEL_ORG_ID/VERCEL_PROJECT_ID
+      # env vars alone. `vercel pull` fails with "Could not retrieve Project
+      # Settings" when it cannot resolve the project from the environment, which
+      # happens for team-owned projects. Writing .vercel/project.json is
+      # unambiguous — it is the same file `vercel link` produces locally.
+      - name: Link Vercel project
+        run: |
+          mkdir -p .vercel
+          cat > .vercel/project.json <<JSON
+          {"projectId":"${{ vars.VERCEL_PROJECT_ID }}","orgId":"${{ vars.VERCEL_ORG_ID }}"}
+          JSON
+          echo "linked project ${{ vars.VERCEL_PROJECT_ID }} in org ${{ vars.VERCEL_ORG_ID }}"
+
       - name: Pull Vercel project settings
         env:
           VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
-        run: vercel pull --yes --environment=production --token="${{ secrets.VERCEL_TOKEN }}"
+        run: |
+          if ! vercel pull --yes --environment=production \
+                 --token="${{ secrets.VERCEL_TOKEN }}"; then
+            echo "::error::vercel pull failed — the token probably lacks access to this project's team"
+            echo "Diagnostics:" >&2
+            vercel whoami --token="${{ secrets.VERCEL_TOKEN }}" 2>&1 | sed 's/^/  whoami: /' >&2 || true
+            vercel teams ls --token="${{ secrets.VERCEL_TOKEN }}" 2>&1 | sed 's/^/  teams:  /' >&2 || true
+            echo >&2
+            echo "The project is owned by ${{ vars.VERCEL_ORG_ID }}. Create the token with" >&2
+            echo "access to that team at https://vercel.com/account/tokens (set Scope to" >&2
+            echo "the team, not just your personal account), then:" >&2
+            echo "  gh secret set VERCEL_TOKEN --env ${{ matrix.environment }}" >&2
+            exit 1
+          fi
 
       # Vite reads VITE_* from process env at build time, so no .env file is
       # needed. These are compiled into the client bundle and are public by
