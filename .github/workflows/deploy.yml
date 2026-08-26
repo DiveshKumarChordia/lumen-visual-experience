@@ -36,8 +36,14 @@ jobs:
         run: |
           ALL='${{ vars.DEPLOY_ENVIRONMENTS }}'
           if [ -z "$ALL" ]; then
-            echo "DEPLOY_ENVIRONMENTS repo variable is not set." >&2
-            echo 'Set it to a JSON array, e.g. ["dev15","dev22"]' >&2
+            {
+              echo "::error::DEPLOY_ENVIRONMENTS repo variable is not set."
+              echo 'Set it to a JSON array of GitHub Environment names:'
+              echo '  gh variable set DEPLOY_ENVIRONMENTS --body '"'"'["dev15"]'"'"''
+              echo
+              echo "Note: a workflow run reads variables as they were WHEN IT STARTED."
+              echo "If you set the variable after pushing, re-run this workflow."
+            } >&2
             exit 1
           fi
           ONLY='${{ inputs.only }}'
@@ -67,6 +73,41 @@ jobs:
           cache: npm
 
       - run: npm ci
+
+      # Fail fast with a readable message. Without this, a missing VERCEL_TOKEN
+      # surfaces as an opaque CLI error much later in the job.
+      - name: Preflight — required config
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+          CS_STACK_API_KEY: ${{ vars.CS_STACK_API_KEY }}
+          CS_DELIVERY_TOKEN: ${{ secrets.CS_DELIVERY_TOKEN }}
+        run: |
+          missing=0
+          need() {
+            if [ -z "$2" ]; then
+              echo "::error::$1 is not set for environment '${{ matrix.environment }}' ($3)"
+              missing=1
+            else
+              echo "  ok  $1"
+            fi
+          }
+          need VERCEL_TOKEN      "$VERCEL_TOKEN"      "environment secret"
+          need VERCEL_ORG_ID     "$VERCEL_ORG_ID"     "environment variable"
+          need VERCEL_PROJECT_ID "$VERCEL_PROJECT_ID" "environment variable"
+          need CS_STACK_API_KEY  "$CS_STACK_API_KEY"  "environment variable"
+          need CS_DELIVERY_TOKEN "$CS_DELIVERY_TOKEN" "environment secret"
+          if [ "$missing" = "1" ]; then
+            {
+              echo
+              echo "Create a Vercel token at https://vercel.com/account/tokens then:"
+              echo "  gh secret set VERCEL_TOKEN --env ${{ matrix.environment }}"
+              echo
+              echo "Variables and the other secrets come from: npm run gh:env -- ${{ matrix.environment }}"
+            } >&2
+            exit 1
+          fi
 
       - name: Install Vercel CLI
         run: npm i -g vercel@latest
@@ -103,7 +144,14 @@ jobs:
           VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
         run: |
-          URL=$(vercel deploy --prebuilt --prod --token="${{ secrets.VERCEL_TOKEN }}")
+          vercel deploy --prebuilt --prod --token="${{ secrets.VERCEL_TOKEN }}" \
+            | tee /tmp/deploy.log
+          # The CLI interleaves progress output, so pull the last https URL.
+          URL=$(grep -oE 'https://[a-zA-Z0-9._-]+\.vercel\.app' /tmp/deploy.log | tail -1)
+          if [ -z "$URL" ]; then
+            echo "::error::Could not determine the deployment URL"
+            exit 1
+          fi
           echo "url=$URL" >> "$GITHUB_OUTPUT"
           echo "Deployed ${{ matrix.environment }} -> $URL"
 
