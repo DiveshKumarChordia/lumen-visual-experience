@@ -148,6 +148,8 @@ async function main() {
     }
 
     const byName = new Map(existing.map((r) => [r.name, r]));
+    /** releaseUid -> scheduled_at, for the verification pass and tracker payload. */
+    const scheduled = new Map();
 
     for (const step of TIMELINE) {
       log.step(`${step.releaseName}  →  ${step.at.slice(0, 10)}`);
@@ -164,15 +166,20 @@ async function main() {
       // A new version. The published version is untouched, so the live site
       // keeps serving current content while this sits in the future.
       const patch = step.apply(page);
-      // The GET expanded assets into objects; collapse them back to uids or the
-      // PUT is rejected with "is not a valid upload."
       const updated = await cma.updateEntry(
         'page',
         page.uid,
         normalizeForWrite({ title: page.title, url: page.url, ...patch }),
         { locale: cfg.locale },
       );
-      const version = updated?._version ?? (page._version ?? 1) + 1;
+      // Use the version the API just reported. Pinning a stale number leaves the
+      // release referencing a superseded version and the timeline resolves to
+      // nothing.
+      const version = updated?._version;
+      if (!version) {
+        log.warn(`could not determine new version for ${step.pageUrl}`);
+        continue;
+      }
       log.ok(`${step.pageUrl} → v${version} (unpublished)`);
 
       let release = byName.get(step.releaseName);
@@ -201,18 +208,33 @@ async function main() {
         log.warn(`add release item: ${err.message}`);
       }
 
-      // The scheduled publish is what a `preview_timestamp` read resolves to.
+      // THE step that puts the release on the Timeline. Without a scheduled
+      // deploy a release has no position in time, so `preview_timestamp` has
+      // nothing to resolve against and the timeline renders empty.
       try {
-        await cma.publishEntry('page', page.uid, {
+        await cma.deployRelease(release.uid, {
+          scheduledAt: step.at,
           environments: [target.uid],
           locales: [cfg.locale],
-          version,
-          scheduledAt: step.at,
-          locale: cfg.locale,
         });
-        log.ok(`scheduled publish at ${step.at}`);
+        log.ok(`release scheduled for ${step.at}`);
+        scheduled.set(release.uid, step.at);
       } catch (err) {
-        log.warn(`scheduled publish: ${err.message}`);
+        log.warn(`schedule release: ${err.message}`);
+      }
+    }
+
+    log.step('Verify releases are scheduled');
+    for (const [uid, at] of scheduled) {
+      const rel = await cma.getRelease(uid);
+      // `status` is an ARRAY of per-environment entries, not an object.
+      const entry = Array.isArray(rel?.status)
+        ? rel.status.find((st) => st.scheduled_at) ?? null
+        : null;
+      if (entry?.scheduled_at) {
+        log.ok(`${rel.name}: ${entry.status} at ${entry.scheduled_at}`);
+      } else {
+        log.warn(`${rel?.name ?? uid}: not scheduled (wanted ${at})`);
       }
     }
 
@@ -220,11 +242,13 @@ async function main() {
     console.log(`
   Timeline milestones created. Preview them with:
 
+    npm run preview:demo -- --timestamp ${days(3)}
     npm run preview:demo -- --timestamp ${days(10)}
     npm run preview:demo -- --timestamp ${days(30)}
-    npm run preview:demo -- --timestamp ${days(60)}
 
-  Each timestamp should resolve to a different version of the pages.
+  These use a RELEASE tracker. A livePreview tracker cannot serve
+  preview_timestamp — the release plan is absent and the API returns
+  500 error_code 194.
 `);
   } finally {
     await cma.logout();

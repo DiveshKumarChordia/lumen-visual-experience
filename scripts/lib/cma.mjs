@@ -486,6 +486,41 @@ export class Cma {
     );
   }
 
+  async getRelease(releaseUid) {
+    const body = await this.get(`/releases/${encodeURIComponent(releaseUid)}`, {
+      headers: this.releaseHeaders(),
+    });
+    return body?.release ?? null;
+  }
+
+  /**
+   * Schedule (or immediately run) a release deploy.
+   *
+   * POST /v3/releases/:uid/deploy
+   *   { release: { scheduled_at, action, environments, locales } }
+   *
+   * `scheduled_at` is what puts the release on the Timeline. Without it a
+   * release exists but has no position in time, so `preview_timestamp` has
+   * nothing to resolve against and the timeline renders empty.
+   * `environments` takes environment UIDs, not names.
+   */
+  async deployRelease(releaseUid, { scheduledAt, environments, locales = ['en-us'], action = 'publish' }) {
+    const release = { action, environments, locales };
+    if (scheduledAt) release.scheduled_at = scheduledAt;
+    return this.post(
+      `/releases/${encodeURIComponent(releaseUid)}/deploy`,
+      { release },
+      { headers: this.releaseHeaders() },
+    );
+  }
+
+  async deleteRelease(releaseUid) {
+    return this.delete(`/releases/${encodeURIComponent(releaseUid)}`, {
+      headers: this.releaseHeaders(),
+      allow: [404],
+    });
+  }
+
   async getEntry(contentTypeUid, entryUid, { locale = 'en-us' } = {}) {
     const body = await this.get(
       `/content_types/${contentTypeUid}/entries/${entryUid}?locale=${encodeURIComponent(locale)}`,

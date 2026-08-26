@@ -18,12 +18,12 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import { loadEnvFile } from './lib/env-file.mjs';
 import { Cma } from './lib/cma.mjs';
 import { resolveHosts } from './lib/hosts.mjs';
+import { createLivePreviewTracker, createReleaseTracker } from './lib/tracker.mjs';
 import { log } from './lib/logger.mjs';
 
 // Must run before any config is read.
@@ -51,10 +51,6 @@ function loadEnvLocal() {
   }
   return out;
 }
-
-/** Tracker hashes are opaque; shape mirrors the e2e helper. */
-const makePreviewHash = () =>
-  `${crypto.randomBytes(10).toString('hex')}${Date.now().toString(36)}`;
 
 function previewMode() {
   if (flag('release')) return { release_id: String(flag('release')) };
@@ -142,7 +138,6 @@ async function viaGraphqlPreview(env, previewHash) {
 async function main() {
   const env = loadEnvLocal();
   const hosts = resolveHosts(process.env);
-  const previewHash = makePreviewHash();
 
   log.banner('Preview API demo');
   log.value('cdn', env.VITE_CONTENTSTACK_API_HOST);
@@ -151,8 +146,13 @@ async function main() {
   log.value('mode', JSON.stringify(previewMode()) === '{}' ? 'live' : JSON.stringify(previewMode()));
   log.value('draft header', flag('draft') ? 'true' : '(unset)');
 
-  // A tracker is required before the preview products will resolve the hash.
-  log.step('Create Live Preview tracker');
+  // A tracker is required before the preview products resolve the hash — and the
+  // TYPE must match the kind of preview. `release_id` / `preview_timestamp` need
+  // a `release` tracker, because only that builds the release plan the API
+  // resolves against; a `livePreview` tracker returns 500 error_code 194.
+  const wantsTimeline = Boolean(flag('release') || flag('timestamp'));
+
+  log.step(wantsTimeline ? 'Create Release tracker' : 'Create Live Preview tracker');
   const cma = new Cma({ cmaBase: hosts.cmaBase, apiKey: env.VITE_CONTENTSTACK_API_KEY });
   await cma.login({
     email: process.env.CS_USER_EMAIL,
@@ -161,24 +161,46 @@ async function main() {
     tfaToken: process.env.CS_USER_TFA_TOKEN || '',
   });
 
+  let previewHash;
   try {
-    const res = await fetch(`https://${env.VITE_CONTENTSTACK_PREVIEW_HOST}/v3/live-preview/tracker`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        api_key: env.VITE_CONTENTSTACK_API_KEY,
-        authtoken: cma.authtoken,
-        live_preview: previewHash,
-        branch: env.VITE_CONTENTSTACK_BRANCH,
-      },
-      body: JSON.stringify({ type: 'livePreview' }),
-    });
-    const body = await readJson(res);
-    if (res.status !== 201) {
-      log.warn(`tracker not created (${res.status}): ${JSON.stringify(body).slice(0, 220)}`);
+    const base = {
+      previewHost: env.VITE_CONTENTSTACK_PREVIEW_HOST,
+      apiKey: env.VITE_CONTENTSTACK_API_KEY,
+      authtoken: cma.authtoken,
+      branch: env.VITE_CONTENTSTACK_BRANCH,
+    };
+
+    let tracker;
+    if (wantsTimeline) {
+      const envs = await cma.environments();
+      const target = envs.find((e) => e.name === env.VITE_CONTENTSTACK_ENVIRONMENT);
+      if (!target) throw new Error(`No environment "${env.VITE_CONTENTSTACK_ENVIRONMENT}"`);
+
+      // Pass each release's own scheduled_at so the plan is positioned in time.
+      const schedules = {};
+      for (const r of await cma.releases()) {
+        const full = await cma.getRelease(r.uid);
+        const st = Array.isArray(full?.status)
+          ? full.status.find((x) => x.scheduled_at)
+          : null;
+        if (st?.scheduled_at) schedules[r.uid] = st.scheduled_at;
+      }
+      log.info(`${Object.keys(schedules).length} scheduled release(s) on the timeline`);
+      if (!Object.keys(schedules).length) {
+        log.warn('no scheduled releases — run `npm run seed:timeline` first');
+      }
+
+      tracker = await createReleaseTracker({ ...base, environmentUid: target.uid, schedules });
+    } else {
+      tracker = await createLivePreviewTracker(base);
+    }
+
+    previewHash = tracker.hash;
+    if (!tracker.ok) {
+      log.warn(`tracker not created (${tracker.status}): ${JSON.stringify(tracker.body).slice(0, 200)}`);
       log.info('preview reads may fall back to published content');
     } else {
-      log.ok(body.notice ?? 'tracker created');
+      log.ok(tracker.body?.notice ?? 'tracker created');
     }
 
     log.step('Read the same content three ways');

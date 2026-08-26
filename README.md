@@ -230,6 +230,62 @@ Site code must never call it — it would need a CMA authtoken in the browser.
 `npm run preview:demo` does call it, because it runs in Node with a login and is
 demonstrating the raw HTTP contract.
 
+### Release / Timeline preview
+
+Timeline preview resolves a `preview_timestamp` against scheduled Releases. Three
+things must all be true, and each failure mode looks like something else:
+
+**1. The tracker must be `type: "release"`.**
+
+A `livePreview` tracker never populates `ctx.release.plan`, so
+`ReleaseInterceptor.getClosestPreviousRelease(plan, …)` dereferences `undefined`
+and every `preview_timestamp` request fails with `500 error_code 194` — for any
+content type, and even for timestamps in the past. It reads like a broken service.
+
+```
+livePreview tracker + preview_timestamp  ->  500 error_code 194
+release    tracker + preview_timestamp  ->  200
+```
+
+`payload.environment` is the environment **UID**, and `payload.schedules` maps
+`releaseUid -> ISO date`. See [scripts/lib/tracker.mjs](scripts/lib/tracker.mjs).
+
+**2. Each Release must be scheduled.**
+
+Creating a Release and adding items is not enough — an unscheduled release has no
+position in time, so the timeline is structurally empty:
+
+```
+POST /v3/releases/:uid/deploy      header release_version: 2.0
+  { release: { scheduled_at, action: "publish", environments: [envUid], locales } }
+```
+
+Note `status` on a Release is an **array** of per-environment entries, so the
+schedule is at `status[].scheduled_at` — not `status.scheduled_at`.
+
+**3. Release items must pin the CURRENT version.**
+
+An item pinned to a superseded version resolves to nothing: the request returns
+`200` with an empty `entries` array, which looks like missing content rather than
+a stale pin.
+
+`npm run seed:timeline` does all three and verifies the result:
+
+```bash
+npm run seed:timeline -- --env .env
+```
+
+Working output on `/`:
+
+| Read | `hero.heading` |
+|---|---|
+| 1 day **before** the release | Understand your system, not just its metrics |
+| 1 day **after** the release | Stop guessing which dashboard matters |
+| `release_id` = that release | Stop guessing which dashboard matters |
+
+Scheduled versions stay unpublished, so the live site keeps serving current
+content.
+
 ### GraphQL Preview — the one hand-built case
 
 The `contentstack` JS delivery SDK is REST-only, so there is no SDK path for
@@ -259,10 +315,13 @@ observable rather than asserted.
 
 ```bash
 npm run preview:demo
-npm run preview:demo -- --release <releaseUid>
-npm run preview:demo -- --timestamp 2026-09-01T00:00:00.000Z
+npm run preview:demo -- --release <releaseUid>      # release tracker
+npm run preview:demo -- --timestamp <iso>           # release tracker
 npm run preview:demo -- --draft
+npm run preview:demo -- --env .env.secondproject    # another stack
 ```
+
+`--release` / `--timestamp` switch the tracker to `type: "release"` automatically.
 
 Draft preview additionally requires the auto-draft plan **and**
 `stack.settings.entries.auto_draft_enabled`.
