@@ -1,0 +1,51 @@
+# Typecheck and build on every push.
+#
+# Deployment is deliberately NOT here. Both Vercel projects are connected to this
+# repo via Vercel's Git integration, so a push to main already builds and
+# promotes each one in parallel, each with its own project-scoped VITE_* values.
+# Duplicating that in Actions added a VERCEL_TOKEN dependency and a second source
+# of truth for no benefit.
+#
+# This job needs no secrets: it proves the code compiles, using placeholder
+# config, before Vercel builds it for real.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      # Placeholders only. The real values are injected by Vercel at build time;
+      # here we are checking that the bundle compiles, not that it can fetch.
+      - name: Build
+        env:
+          VITE_CONTENTSTACK_API_KEY: ci_placeholder
+          VITE_CONTENTSTACK_DELIVERY_TOKEN: ci_placeholder
+          VITE_CONTENTSTACK_ENVIRONMENT: ci
+          VITE_CONTENTSTACK_API_HOST: cdn.contentstack.io
+          VITE_CONTENTSTACK_APP_HOST: https://app.contentstack.com
+        run: npm run build
+
+      - name: Check the scripts parse
+        run: |
+          for f in scripts/*.mjs scripts/lib/*.mjs; do
+            node --check "$f" || exit 1
+          done
+          echo "all scripts parse"

@@ -1,32 +1,61 @@
 # Running multiple stacks at once
 
-One repo, many Contentstack stacks, all deployed simultaneously. Configuration
-lives in **GitHub Environments** — nothing stack-specific is committed.
+One repo, many Contentstack stacks, all deployed simultaneously.
 
 ```
-                    ┌── GitHub Environment: dev15 ──┐
-                    │  vars:    CS_INSTANCE=dev15    │
-                    │           CS_STACK_API_KEY=…   │
-                    │           VERCEL_PROJECT_ID=…  │
-git push  ─────────▶│  secrets: CS_PREVIEW_TOKEN=…   │──▶ Vercel project A ──▶ site A
-   │                └────────────────────────────────┘
-   │                ┌── GitHub Environment: dev22 ──┐
-   └───────────────▶│  vars:    CS_INSTANCE=dev22    │──▶ Vercel project B ──▶ site B
-                    │           …                    │
-                    └────────────────────────────────┘
+                      ┌── Vercel project: lumen-visual-experience ──┐
+                      │  VITE_* for stack blt5aaa…                  │
+git push ────────────▶│  → lumen-visual-experience.vercel.app       │
+   (Vercel Git        └─────────────────────────────────────────────┘
+    integration,      ┌── Vercel project: lumen-rbac-demo ──────────┐
+    both in parallel) │  VITE_* for stack bltf7a4…                  │
+                      │  → lumen-rbac-demo.vercel.app               │
+                      └─────────────────────────────────────────────┘
 ```
 
-Matrix jobs run in parallel, and each targets its **own Vercel project**, so the
-deployments never overwrite one another.
+**Deployment is owned by Vercel, not GitHub Actions.** Both projects are
+connected to this repo, so one push builds and promotes both in parallel, each
+using its own project-scoped `VITE_*` values. There is no `VERCEL_TOKEN` and no
+deploy workflow — an Actions-based deploy was tried first and removed: it
+duplicated what the Git integration already does, needed a token, and created a
+second source of truth for the same values.
 
-## Why GitHub Environments rather than branches
+What each system owns:
 
-Branch-per-stack means merge management forever. Environments keep one `main`
-and vary only configuration — which is the only thing that actually differs
-between stacks.
+| Concern | Owner |
+|---|---|
+| Build + deploy per stack | Vercel Git integration |
+| Build-time `VITE_*` per stack | Vercel project env vars (`npm run vercel:env`) |
+| Writing content into a stack | `bootstrap.yml` + GitHub Environments (manual) |
+| Typecheck / build check | `ci.yml` (no secrets) |
 
-They also give you per-environment protection rules and required reviewers, which
-matters once one of these points at something real.
+## Adding a stack, end to end
+
+```bash
+# 1. Contentstack — create/sync everything in the new stack
+npm run bootstrap -- --env .env.<name>
+
+# 2. Vercel — one project per stack, then push its derived values
+vercel link --yes --project lumen-<name>
+npm run vercel:env -- --apply          # reads .env.<name>.local
+
+# 3. Deploy once manually; afterwards `git push` handles it
+vercel deploy --prod --yes
+
+# 4. Point Visual Builder at it
+npm run site:url -- --env .env.<name> https://lumen-<name>.vercel.app
+
+# 5. Optional — only if you want CI to run the bootstrap for this stack
+npm run gh:env -- <name> --env .env.<name>
+```
+
+## Why not a branch per stack
+
+Branch-per-stack means merge management forever. One `main` with per-project
+configuration varies only the thing that actually differs between stacks.
+
+GitHub Environments still earn their place for `bootstrap.yml`, which writes to
+Contentstack and benefits from protection rules and required reviewers.
 
 ## One env file per stack
 
@@ -137,8 +166,10 @@ behind SSR or a server route so the token stays server-side.
 
 | Workflow | Trigger | Does |
 |---|---|---|
-| `deploy.yml` | push to `main`, or manual | Builds and deploys every environment in the matrix, in parallel. `workflow_dispatch` takes an `only` input to target one. |
+| `ci.yml` | push / PR | Typecheck, build with placeholder config, and parse-check every script. Needs no secrets. |
 | `bootstrap.yml` | **manual only** | Creates/syncs content types, taxonomies, global fields, assets and entries in one stack. Never runs on push, because it writes content. |
+
+Deployment is not a workflow — see the top of this document.
 
 ### 2FA in CI
 
@@ -150,14 +181,21 @@ consecutive runs otherwise collide.
 ### Repointing Contentstack after deploy
 
 Visual Builder frames the URL held in the Contentstack **environment**, so each
-stack should point at its own deployment. Set `CS_SYNC_SITE_URL=true` on an
-environment and `deploy.yml` runs `scripts/set-site-url.mjs` after deploying.
+stack should point at its own deployment:
 
-Prefer setting `CS_PUBLIC_URL` to the stable production alias
-(`<project>.vercel.app`). The per-deployment URL changes every push, and on this
-Vercel account the deployment-specific and team-scoped URLs sit behind
-Deployment Protection — which sends `frame-ancestors 'none'` and so **cannot be
-framed by Visual Builder**. The clean production alias is the one that works.
+```bash
+npm run site:url -- --env .env.<name> https://lumen-<name>.vercel.app
+```
+
+Use the stable production alias
+(`<project>.vercel.app`) — it is stable across pushes, whereas the
+per-deployment URL changes every time.
+
+This matters more than it looks. The project sets
+`ssoProtection.deploymentType: "all_except_custom_domains"`, so the
+deployment-specific and team-scoped URLs sit behind Vercel SSO, which serves
+`x-frame-options: DENY` and `frame-ancestors 'none'` and therefore **cannot be
+framed by Visual Builder**. Only the clean production alias is framable.
 
 ## Local development
 
